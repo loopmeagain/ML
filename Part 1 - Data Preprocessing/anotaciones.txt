@@ -1,0 +1,5 @@
+Cuanto tengo que usar categorical data que tiene una cantidad de conjuntos mayor a dos tengo que utilizar oneHotEncoder, pero usar LabelEncoder antes, si es binario puedo usar solamente label.
+
+Feature scaling es necesario porque las ecuaciones que se usan en ML son en el espacio euclideo, si tenes datos que estan es distintos rangos o escalas  de Ex10^m  hay que encontrar una forma de que tengan el mismo peso.
+para esto hay dos soluciones, normalizar o estandarizar. cuando la dispersion de los valores es alta, se utiliza estandarizacion porque utiliza el promedio. Cuando la dispersion es baja y esta concentrada en los extremos se utiliza normalizacion.
+A pesar de que a veces no hay interpretacion euclidea de las distancias entre las variables independientes, los algoritmos se realizan de formas mas rapidas cuando se utiliza feature scalling.
