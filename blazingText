@@ -1,0 +1,155 @@
+import sagemaker
+from sagemaker import get_execution_role
+import json
+import boto3
+sess = sagemaker.Session()
+role = get_execution_role()
+print(role) # This is the role that SageMaker would use to leverage AWS resources (S3, CloudWatch) on your behalf
+
+bucket = 'my-bucket' # Replace with your own bucket name if needed
+print(bucket)
+prefix = 'blazingtext/supervised' #Replace with the prefix under which you want to store the data if needed
+!wget https://github.com/loopmeagain/ML/raw/master/tags_csv.tar.gz
+!tar -xzvf tags_csv.tar.gz
+index_to_label = {'Canales y servicios':'Canales y servicios','Calidad de atencion ':'Calidad de atencion','Productos':'Productos','Tiempos de espera':'Tiempos de espera','Disp. automaticos':'Disp. automaticos','Gestion de consultas':'Gestion de consultas','Procesos':'Procesos','Layout sucursal':'Layout sucursal','TCR':'TCR','Marca':'Marca'} 
+print(index_to_label)
+
+from random import shuffle
+import multiprocessing
+from multiprocessing import Pool
+import csv
+import nltk
+nltk.download('punkt')
+
+def transform_instance(row):
+    cur_row = []
+    label = "__label__" + index_to_label[row[0]]  #Prefix the index-ed label with __label__
+    cur_row.append(label)
+    cur_row.extend(nltk.word_tokenize(row[1].lower()))
+   
+    return cur_row
+
+
+def preprocess(input_file, output_file, keep=1):
+    all_rows = []
+    with open(input_file, 'r') as csvinfile:
+        csv_reader = csv.reader(csvinfile, delimiter=',')
+        for row in csv_reader:
+            all_rows.append(row)
+    shuffle(all_rows)
+    all_rows = all_rows[:int(keep*len(all_rows))]
+    pool = Pool(processes=multiprocessing.cpu_count())
+    transformed_rows = pool.map(transform_instance, all_rows)
+    pool.close() 
+    pool.join()
+    
+    with open(output_file, 'w') as csvoutfile:
+        
+        csv_writer = csv.writer(csvoutfile, delimiter=' ', lineterminator='\n')
+        csv_writer.writerows(transformed_rows)
+
+%%time
+
+# Preparing the training dataset
+
+# Since preprocessing the whole dataset might take a couple of mintutes,
+# we keep 20% of the training dataset for this demo.
+# Set keep to 1 if you want to use the complete dataset
+preprocess('tags_csv/tags_train.csv', 'tags.train', keep=.2)
+        
+# Preparing the validation dataset        
+preprocess('tags_csv/tags_test.csv', 'tags.validation')
+
+
+%%time
+
+train_channel = prefix + '/train'
+validation_channel = prefix + '/validation'
+
+sess.upload_data(path='tags.train', bucket=bucket, key_prefix=train_channel)
+sess.upload_data(path='tags.validation', bucket=bucket, key_prefix=validation_channel)
+
+s3_train_data = 's3://{}/{}'.format(bucket, train_channel)
+s3_validation_data = 's3://{}/{}'.format(bucket, validation_channel)
+
+s3_output_location = 's3://{}/{}/output'.format(bucket, prefix)
+print(s3_validation_data)
+
+region_name = boto3.Session().region_name
+container = sagemaker.amazon.amazon_estimator.get_image_uri(region_name, "blazingtext", "latest")
+print('Using SageMaker BlazingText container: {} ({})'.format(container, region_name))
+
+bt_model = sagemaker.estimator.Estimator(container,
+                                         role, 
+                                         train_instance_count=1, 
+                                         train_instance_type='ml.c4.4xlarge',
+                                         train_volume_size = 30,
+                                         train_max_run = 360000,
+                                         input_mode= 'File',
+                                         output_path=s3_output_location,
+                                         sagemaker_session=sess)
+
+bt_model.set_hyperparameters(mode="supervised",
+                            epochs=10,
+                            min_count=2,
+                            learning_rate=0.05,
+                            vector_dim=10,
+                            early_stopping=True,
+                            patience=4,
+                            min_epochs=5,
+                            word_ngrams=2)
+train_data = sagemaker.session.s3_input(s3_train_data, distribution='FullyReplicated', 
+                        content_type='text/plain', s3_data_type='S3Prefix')
+validation_data = sagemaker.session.s3_input(s3_validation_data, distribution='FullyReplicated', 
+                             content_type='text/plain', s3_data_type='S3Prefix')
+data_channels = {'train': train_data, 'validation': validation_data}
+bt_model.fit(inputs=data_channels, logs=True)
+text_classifier = bt_model.deploy(initial_instance_count = 1,instance_type = 'ml.m4.xlarge')
+
+
+
+from nltk.tokenize.toktok import ToktokTokenizer
+from nltk import sent_tokenize
+toktok = ToktokTokenizer()
+sentences = [ u' un poco más de agilidad',
+ u' Muy buenos los Cajeros automáticos ',
+ u' Espere casi una hora para ser atendida para entrar a mi caja de seguridad',
+ u' Buen servicio',
+ u' Facilidad para llevar a cabo cualquier trámite. Rapidez.',
+ u' por parecerme que un cliente con 1 (Una) caja de ahorro sueldo. deba tener 3 (tres) claves distintas. banelco..frances net y para OPERAR POR CAJA!!!!!!!',
+ u' Falta de promociones ventajosas con respecto a la competencia',
+ u' Limpieza y había cajeros fuera de servicio ',
+ u' Atención clientes vip',
+ u' por la atencion de sus empleados en el sector de atencion al cliente',
+ u' El tiempo que se tarda en la atención al cliente',
+ u' La verdad es que me siento muy satisfecho con la atención que tienen con los clientes',
+ u' higiene',
+ u' Agilidad y rapidez en la atención ',
+ u' POR MENTIRAS TELEFONICAS',
+ u' Porque las gestiones som rapidas. Muy buena atencion',
+ u' No funcionaba el cajero exclusivo para clientes y tuve que esperar bastante.',
+ u' la limpieza',
+ u' A veces hay demora xq todas las cajas no estan atendiendo',
+ u' muy agil',
+ u' Mas y mejor identificacion de los sectores',
+ u' porque esta consolidado hace muchoasaños',
+ u' Por la pésima atención del personal de caja',
+ u' Porque me gusta mi banco ',
+ u' Higiene',
+ u' Atención amable de parte de su personal',
+ u' Hay 2 filas. Una VIP y una general. Entiendo que el banco cuide a sus clientes VIP, pero deberian hacer que pase uno y uno por las cajas, no siempre los VIP y que cuando no haya más, pasen los de la fila de la general. Estuve esperando 30 minutos para que me atiendan.'
+]
+
+# using the same nltk tokenizer that we used during data preparation for training
+for sentu in sentences:
+    sentu=sent_tokenize(sentu,language='spanish')
+
+tokenized_sentences = [' '.join(toktok.tokenize(sent)) for sent in sentences]
+
+payload = {"instances" : tokenized_sentences,
+          "configuration": {"k": 3}}
+
+response = text_classifier.predict(json.dumps(payload))
+
+predictions = json.loads(response)
+print(json.dumps(predictions, indent=2))
